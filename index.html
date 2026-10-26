@@ -62,6 +62,17 @@
   .note-block b{color:var(--ink);}
   .loading-note{font-size:12.5px; color:var(--ink-faint); text-align:center; padding:10px;}
   .hotspot-dot{position:absolute; width:14px; height:14px; border-radius:50%; background:var(--accent); border:2px solid var(--surface); box-shadow:0 0 0 3px rgba(90,76,224,.35); cursor:pointer; transform:translate(-50%,-50%);}
+  .reel-grid{display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:20px; align-items:start;}
+  @media (max-width:720px){.reel-grid{grid-template-columns:1fr;}}
+  .reel-form{display:flex; flex-direction:column; gap:12px;}
+  .reel-form label{font-size:13px; font-weight:600; color:var(--ink-muted); display:flex; flex-direction:column; gap:5px;}
+  .reel-form input[type=text], .reel-form select{padding:9px 11px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--ink); font:inherit; font-size:14px;}
+  .reel-form .check{flex-direction:row; align-items:center; gap:8px; font-weight:500;}
+  .reel-preview{background:var(--surface-2); border-radius:12px; aspect-ratio:9/16; overflow:hidden; display:flex; align-items:center; justify-content:center;}
+  .reel-preview video, .reel-preview canvas{width:100%; height:100%; object-fit:contain; display:block;}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink);}
+  .btn[disabled]{opacity:.5; cursor:not-allowed;}
+  .btn.rec{background:#C62E2E; border-color:#C62E2E; color:#fff;}
 </style>
 
 <div dir="rtl" lang="ar" class="wrap">
@@ -101,6 +112,37 @@
         </div>
         <p class="hint">اسحب بالماوس عشان تدوّر الوش، واعمل scroll عشان تقرّب/تبعّد. دوس على النقاط الزرقا عشان تشوف ملاحظة.</p>
         <div class="finding" id="finding3d">دوّر الوش ودوس على نقطة عشان تشوف الملاحظة.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="reelStudio" style="margin-top:20px">
+    <div class="panel-head">
+      <h3>Reel Studio — سجّل ريل من المجسم 3D</h3>
+      <span class="tag ready">فيديو عمودي 9:16</span>
+    </div>
+    <div class="panel-body">
+      <div class="reel-grid">
+        <div class="reel-form">
+          <label>عنوان الريل
+            <input type="text" id="reelTitle" value="حركة عضلات الوش" maxlength="60">
+          </label>
+          <label>المدة
+            <select id="reelDuration">
+              <option value="6">6 ثواني</option>
+              <option value="10" selected>10 ثواني</option>
+              <option value="15">15 ثانية</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="reelAuto" checked> بدّل التعبيرات تلقائيًا (راحة ← رفع حواجب ← عبوس ← ابتسامة)</label>
+          <label class="check"><input type="checkbox" id="reelSpin" checked> دوّر الوش ببطء أثناء التسجيل</label>
+          <div class="controls-row">
+            <button class="btn rec" id="reelRecord">● ابدأ التسجيل</button>
+            <a class="btn primary" id="reelDownload" download="reel.webm" style="display:none; text-decoration:none">تحميل الريل</a>
+          </div>
+          <div class="finding" id="reelStatus">جاهز. اضغط ابدأ التسجيل وهيتسجل المجسم 3D مع العنوان والتعبيرات.</div>
+        </div>
+        <div class="reel-preview" id="reelPreview"><span class="hint">المعاينة هتظهر هنا</span></div>
       </div>
     </div>
   </div>
@@ -5101,10 +5143,124 @@ function animate(){
     controls.update();
     updateMarkers();
     renderer.render(scene, camera);
+    if (window.__reelFrame) window.__reelFrame();
   } catch (e){
     show3dError(e && e.message ? e.message : "خطأ أثناء الرسم");
   }
 }
+
+// ---- Reel Studio: records the 3D stage into a vertical 9:16 video ----
+(function(){
+  var W = 720, H = 1280, FPS = 30;
+  var btn = document.getElementById("reelRecord");
+  var statusEl = document.getElementById("reelStatus");
+  var preview = document.getElementById("reelPreview");
+  var dl = document.getElementById("reelDownload");
+  var canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  var ctx = canvas.getContext("2d");
+  var SEQ = ["rest", "brow", "frown", "smile"];
+  var SEQ_LABEL = { rest: "راحة", brow: "رفع الحواجب", frown: "عبوس", smile: "ابتسامة" };
+  var rec = null, chunks = [], t0 = 0, dur = 0, title = "", auto = true, lastUrl = null;
+
+  if (!window.MediaRecorder || !canvas.captureStream) {
+    btn.disabled = true;
+    statusEl.textContent = "المتصفح ده مش بيدعم تسجيل الفيديو (MediaRecorder).";
+    return;
+  }
+
+  function pickMime(){
+    var c = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+    for (var i = 0; i < c.length; i++) if (MediaRecorder.isTypeSupported(c[i])) return c[i];
+    return "";
+  }
+
+  function wrapText(text, maxW, lineH, x, y){
+    var words = text.split(" "), line = "", lines = [];
+    words.forEach(function(w){
+      var test = line ? line + " " + w : w;
+      if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; } else line = test;
+    });
+    lines.push(line);
+    lines.forEach(function(l, i){ ctx.fillText(l, x, y + i * lineH); });
+  }
+
+  function drawFrame(){
+    var el = renderer.domElement, now = performance.now(), t = (now - t0) / 1000;
+    var g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#1b1740"); g.addColorStop(1, "#0d0f14");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    ctx.direction = "rtl"; ctx.textAlign = "center"; ctx.fillStyle = "#ffffff";
+    ctx.font = "700 48px 'IBM Plex Sans', 'Segoe UI', Tahoma, sans-serif";
+    wrapText(title, W - 100, 62, W / 2, 150);
+
+    var side = Math.min(el.width, el.height), sx = (el.width - side) / 2, sy = (el.height - side) / 2;
+    var box = W - 60, by = 250;
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(30, by, box, box, 28); else ctx.rect(30, by, box, box);
+    ctx.clip();
+    ctx.fillStyle = "#EAECF1"; ctx.fillRect(30, by, box, box);
+    ctx.drawImage(el, sx, sy, side, side, 30, by, box, box);
+    ctx.restore();
+
+    var label = auto ? SEQ_LABEL[SEQ[Math.min(SEQ.length - 1, Math.floor(t / dur * SEQ.length))]] : SEQ_LABEL[currentExpr];
+    ctx.fillStyle = "#8C7FFF";
+    ctx.font = "600 40px 'IBM Plex Sans', 'Segoe UI', Tahoma, sans-serif";
+    ctx.fillText(label || "", W / 2, by + box + 90);
+
+    ctx.fillStyle = "rgba(255,255,255,.2)"; ctx.fillRect(60, H - 90, W - 120, 8);
+    ctx.fillStyle = "#3FBBA8"; ctx.fillRect(60, H - 90, (W - 120) * Math.min(1, t / dur), 8);
+  }
+
+  window.__reelFrame = function(){
+    if (!rec) return;
+    var t = (performance.now() - t0) / 1000;
+    if (auto) setExpr(SEQ[Math.min(SEQ.length - 1, Math.floor(t / dur * SEQ.length))]);
+    drawFrame();
+    statusEl.textContent = "بيسجّل… " + Math.min(dur, Math.ceil(t)) + " / " + dur + " ث";
+    if (t >= dur) stop();
+  };
+
+  function stop(){
+    var r = rec; rec = null;
+    controls.autoRotate = false;
+    if (r && r.state !== "inactive") r.stop();
+  }
+
+  btn.addEventListener("click", function(){
+    if (rec) { stop(); return; }
+    if (!renderer) return;
+    title = document.getElementById("reelTitle").value.trim() || "Derma Reel";
+    dur = parseInt(document.getElementById("reelDuration").value, 10);
+    auto = document.getElementById("reelAuto").checked;
+    controls.autoRotate = document.getElementById("reelSpin").checked;
+    controls.autoRotateSpeed = 2;
+    chunks = [];
+    var mime = pickMime();
+    var r = new MediaRecorder(canvas.captureStream(FPS), mime ? { mimeType: mime, videoBitsPerSecond: 5000000 } : undefined);
+    r.ondataavailable = function(e){ if (e.data && e.data.size) chunks.push(e.data); };
+    r.onstop = function(){
+      var type = r.mimeType || mime || "video/webm";
+      var blob = new Blob(chunks, { type: type });
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = URL.createObjectURL(blob);
+      var v = document.createElement("video");
+      v.src = lastUrl; v.controls = true; v.loop = true; v.muted = true; v.playsInline = true;
+      preview.innerHTML = ""; preview.appendChild(v); v.play().catch(function(){});
+      dl.href = lastUrl; dl.download = "reel." + (type.indexOf("mp4") >= 0 ? "mp4" : "webm"); dl.style.display = "";
+      btn.textContent = "● ابدأ التسجيل"; btn.classList.add("rec");
+      statusEl.textContent = "الريل جاهز — شغّله من المعاينة أو اضغط تحميل.";
+    };
+    t0 = performance.now();
+    rec = r;
+    drawFrame();
+    r.start();
+    btn.textContent = "■ إيقاف";
+    dl.style.display = "none";
+  });
+})();
 
 initThree();
 

@@ -1,0 +1,6 @@
+{
+  "name": "derma-simulation",
+  "private": true,
+  "scripts": { "test": "node tests/reel-studio.test.js" },
+  "devDependencies": { "playwright": "*" }
+}
